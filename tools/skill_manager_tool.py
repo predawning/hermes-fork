@@ -948,6 +948,17 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Register telemetry from birth so the skill is visible to usage-ranking
+    # (freshness badge) and curator-eligible (created_by=agent) immediately.
+    # Upstream #19621 leaves foreground creates unmarked; this is our local
+    # retention policy — surface once, then keep (used) or archive (stale).
+    try:
+        from tools import skill_usage
+        skill_usage.bump_view(name)
+        skill_usage.mark_agent_created(name)
+    except Exception:
+        pass
+
     # Extract description from frontmatter for verbose notifications
     _desc = ""
     try:

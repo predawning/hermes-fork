@@ -384,7 +384,12 @@ def list_agent_created_skill_names() -> List[str]:
             names.append(name)
             continue
         # Agent-authored (or local-manual) skills must opt in via their record.
-        if not _is_curator_managed_record(usage.get(name)):
+        # bot-* are the agent's disposable on-demand class. Legacy/unregistered
+        # ones carry no curator-managed record; gating them out here means
+        # apply_automatic_transitions can never seed the inactivity clock and
+        # they'd live forever. Admit all bot-* so TTL seeds unmanaged ones on
+        # first pass (anchor=created_at) and archives them after 90d idle.
+        if not _is_curator_managed_record(usage.get(name)) and not name.startswith("bot-"):
             continue
         names.append(name)
     return sorted(set(names))
