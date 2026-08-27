@@ -2673,6 +2673,7 @@ from gateway.session_state import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.nats_collab_listener import run_nats_collab_listener
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
@@ -13355,6 +13356,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # is ignored via its instantiation epoch; only a current-epoch marker
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
+
+        # Start background NATS collaboration listener — subscribes to
+        # collab.done.*.> on the shared NATS bus (ser6) and injects synthetic
+        # Slack events when xiaozhi (Claude on ser6) finishes her round,
+        # reusing the existing Slack thread session (same model, prompt, context).
+        self._spawn_supervised(
+            lambda: run_nats_collab_listener(self), "nats_collab_listener"
+        )
 
         logger.info("Press Ctrl+C to stop")
         

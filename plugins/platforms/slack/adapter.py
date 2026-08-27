@@ -41,6 +41,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.nats_collab_listener import publish_collab_msg, TARGET_SLACK_CHANNEL as NATS_COLLAB_CHANNEL
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2790,6 +2791,18 @@ class SlackAdapter(BasePlatformAdapter):
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
+
+            # ── NATS collab enforcement: publish to NATS before Slack ──
+            # 0016: only fires for the collab channel + threaded sends; the
+            # end-tag gate inside publish_collab_msg drops non "Round X is done"
+            # traffic (status/thinking) to Slack-only. Failure falls through to
+            # Slack anyway — the bot also publishes collab.msg via nats-bridge MCP.
+            if chat_id == NATS_COLLAB_CHANNEL and thread_ts:
+                try:
+                    seq = await publish_collab_msg(thread_ts, content, channel=chat_id)
+                    logger.debug("nats-collab-publish: seq=%d thread=%s — confirmed before Slack", seq, thread_ts)
+                except Exception as e:
+                    logger.warning("nats-collab-publish failed: %s — falling through to Slack anyway", e)
 
             # reply_broadcast: also post thread replies to the main channel.
             # Controlled via platform config: gateway.slack.reply_broadcast
