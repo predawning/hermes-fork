@@ -275,6 +275,66 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
+# Set by _check_via_release_tag when it resolves the newest release tag —
+# lets the banner name the release in the update notice.
+_RELEASE_TAG_FROM_LAST_CHECK: Optional[str] = None
+
+
+def _check_via_release_tag(repo_dir: Path) -> Optional[int]:
+    """Compare HEAD against the newest v* release tag (fork-aware).
+
+    A fork pinned to a release (local patches on top of a v* tag) should
+    track releases, not origin/main — main drifts past every release and
+    misreports release-anchored forks as "N commits behind". Returns 0 when
+    HEAD is at/descendant of the newest release tag, the commit count behind
+    a newer release when one exists, or None when no tags are available
+    (caller falls back to the origin/main comparison).
+    """
+    # Refresh release tags with one scoped fetch; on timeout/offline degrade
+    # to whatever tags already exist locally (the count stays honest, just
+    # may lag one release behind). No ls-remote — one refspec fetch is
+    # cheaper and shares the connection.
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", "refs/tags/v*:refs/tags/v*", "--quiet"],
+            capture_output=True, timeout=20, cwd=str(repo_dir),
+        )
+    except Exception:
+        pass
+
+    tags = _git_stdout(["tag", "--sort=-v:refname"], cwd=repo_dir)
+    if not tags:
+        return None
+    newest_tag = next(
+        (t for t in tags.splitlines()
+         if t.startswith("v") and t[1:2].isdigit()),
+        None,
+    )
+    if newest_tag is None:
+        return None
+
+    global _RELEASE_TAG_FROM_LAST_CHECK
+    _RELEASE_TAG_FROM_LAST_CHECK = newest_tag
+
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    if not head_rev:
+        return None
+    # At/descendant of the newest release tag → up to date for this fork.
+    if _git_stdout(
+        ["merge-base", "--is-ancestor", newest_tag, "HEAD"], cwd=repo_dir
+    ) is not None:
+        return 0
+    counted = _git_stdout(
+        ["rev-list", "--count", f"HEAD..{newest_tag}"], cwd=repo_dir
+    )
+    if counted is None:
+        return None
+    try:
+        return int(counted)
+    except ValueError:
+        return None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
@@ -422,6 +482,8 @@ def check_for_updates() -> Optional[int]:
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
             ):
+                global _RELEASE_TAG_FROM_LAST_CHECK
+                _RELEASE_TAG_FROM_LAST_CHECK = cached.get("release")
                 return cached.get("behind")
     except Exception:
         pass
@@ -441,11 +503,17 @@ def check_for_updates() -> Optional[int]:
             # above) or an unsupported install without a source tree.
             behind = None
         else:
-            behind = _check_via_local_git(repo_dir)
+            # Fork-aware: a release-anchored fork compares against the newest
+            # release tag, not origin/main (which drifts past releases and
+            # misreports "N commits behind" for a fork pinned to a tag).
+            behind = _check_via_release_tag(repo_dir)
+            if behind is None:
+                behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev,
+                        "ver": VERSION, "release": _RELEASE_TAG_FROM_LAST_CHECK}),
             encoding="utf-8",
         )
     except Exception:

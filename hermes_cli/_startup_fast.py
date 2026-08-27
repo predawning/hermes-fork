@@ -232,16 +232,18 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # version info). Bounded by check_for_updates' own subprocess/network
     # timeouts and its 6-hour cache; any failure prints nothing.
     try:
-        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+        from hermes_cli import banner as _banner
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates()
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
+        behind = _banner.check_for_updates()
+        if behind == _banner.UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
+            release = _banner._RELEASE_TAG_FROM_LAST_CHECK
+            target = f" ({release})" if release else ""
             print(
-                f"Update available: {behind} {commits_word} behind — "
+                f"Update available: {behind} {commits_word} behind{target} — "
                 f"run '{recommended_update_command()}'"
             )
         elif behind == 0:
