@@ -6134,6 +6134,35 @@ class SlackAdapter(BasePlatformAdapter):
         # the allowed_channels whitelist or user authorization above.
         force_process = bool(event.get("_hermes_force_process"))
 
+        # ── hermes-local/other-bot filter: skip messages addressed to another
+        # bot (not us) — e.g. "@Claude ping" in a shared channel. Native
+        # allow_bots only covers bot *authors*; this covers human senders
+        # directing traffic at another bot.
+        other_bot_ids = self._slack_other_bot_ids()
+        other_bot_names = self._slack_other_bot_names()
+        if (other_bot_ids or other_bot_names) and not is_one_to_one_dm and not is_mentioned:
+            is_other_addressed = any(
+                f"<@{bid}>" in routing_text for bid in other_bot_ids
+            ) or any(
+                f"@{name}" in routing_text for name in other_bot_names
+            )
+            if is_other_addressed:
+                logger.info(
+                    "[Slack] Message addresses other bot, not us — skipping (channel=%s user=%s)",
+                    channel_id, user_id,
+                )
+                # Debug ack: send tiny reply so operator can visually confirm filter fired
+                try:
+                    client = self._get_client(channel_id)
+                    await client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=ts,
+                        text="NO_REPLY",
+                    )
+                except Exception:
+                    pass
+                return
+
         # Some Slack bot posts arrive as ordinary-looking message events with a
         # bot *user* id but without ``bot_id``/``subtype=bot_message``.  This is
         # the shape produced by peer Hermes agents in Socket Mode on some
@@ -6187,6 +6216,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
+            elif not is_thread_reply and not is_dm:
+                # hermes-local/threadgate-v1: require_mention is thread-scoped.
+                # Top-level channel messages stay free; the mention gate applies
+                # only to thread-replies (cold threads are dropped, participated
+                # threads wake via _should_wake_on_unmentioned_message below).
+                pass
             elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
@@ -8749,6 +8784,61 @@ class SlackAdapter(BasePlatformAdapter):
                     raise
 
     # ── Channel mention gating ─────────────────────────────────────────────
+
+    def _slack_other_bot_names(self) -> List[str]:
+        """Bot display names to detect in plain-text mentions (e.g. ``@Claude``).
+
+        Reads ``slack.other_bot_names`` (list) or ``SLACK_OTHER_BOT_NAMES``
+        (comma-separated env var).  Complements ``_slack_other_bot_ids``
+        which only matches Slack-formatted ``<@BOT_ID>`` mentions.
+        """
+        cached = getattr(self, "_cached_other_bot_names", None)
+        if cached is not None:
+            return cached
+
+        names: List[str] = []
+        configured = self.config.extra.get("other_bot_names") if self.config.extra else None
+        if isinstance(configured, list):
+            names = [str(x).strip() for x in configured if x]
+        elif isinstance(configured, str):
+            names = [x.strip() for x in configured.split(",") if x.strip()]
+
+        if not names:
+            raw = os.getenv("SLACK_OTHER_BOT_NAMES", "").strip()
+            if raw:
+                names = [x.strip() for x in raw.split(",") if x.strip()]
+
+        self._cached_other_bot_names = names
+        return names
+
+    def _slack_other_bot_ids(self) -> List[str]:
+        """Bot user IDs whose messages we should ignore when not also @mentioned.
+
+        Reads ``slack.other_bot_ids`` (list) or ``SLACK_OTHER_BOT_IDS``
+        (comma-separated env var).  When a channel message explicitly addresses
+        a bot in this list (e.g. ``<@U0BKX9KH7U6>``) but does NOT also mention
+        our own bot, the adapter quietly drops the message.
+        """
+        cached = getattr(self, "_cached_other_bot_ids", None)
+        if cached is not None:
+            return cached
+
+        ids: List[str] = []
+        configured = self.config.extra.get("other_bot_ids") if self.config.extra else None
+        if isinstance(configured, list):
+            ids = [str(x).strip() for x in configured if x]
+        elif isinstance(configured, str):
+            ids = [x.strip() for x in configured.split(",") if x.strip()]
+
+        if not ids:
+            raw = os.getenv("SLACK_OTHER_BOT_IDS", "").strip()
+            if raw:
+                ids = [x.strip() for x in raw.split(",") if x.strip()]
+
+        self._cached_other_bot_ids = ids
+        if ids:
+            logger.info("[Slack] Other-bot filter active: %s", ids)
+        return ids
 
     def _slack_require_mention(self) -> bool:
         """Return whether channel messages require an explicit bot mention.

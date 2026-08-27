@@ -60,7 +60,8 @@ OTHER_CHANNEL_ID = "C9999999999"
 
 
 def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None,
-                  allowed_channels=None, mention_patterns=None):
+                  allowed_channels=None, mention_patterns=None,
+                  other_bot_ids=None, other_bot_names=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -72,6 +73,10 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["allowed_channels"] = allowed_channels
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    if other_bot_ids is not None:
+        extra["other_bot_ids"] = other_bot_ids
+    if other_bot_names is not None:
+        extra["other_bot_names"] = other_bot_names
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -172,6 +177,9 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         if allowed and channel_id not in allowed:
             return False
 
+        if not thread_reply and channel_type not in {"im", "mpim"}:
+            # threadgate-v1: top-level channel messages stay free.
+            return True
         if channel_id in adapter._slack_free_response_channels():
             return True
         elif not adapter._slack_require_mention():
@@ -186,9 +194,10 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
     return True
 
 
-def test_default_require_mention_channel_without_mention_ignored():
+def test_require_mention_top_level_without_mention_processed():
+    # threadgate-v1: require_mention gates only thread-replies; top-level stays free.
     adapter = _make_adapter()  # default: require_mention=True
-    assert _would_process(adapter, text="hello everyone") is False
+    assert _would_process(adapter, text="hello everyone") is True
 
 
 def test_channel_in_free_response_processed_without_mention():
@@ -199,17 +208,28 @@ def test_channel_in_free_response_processed_without_mention():
     assert _would_process(adapter, channel_id=CHANNEL_ID, text="hello") is True
 
 
-def test_other_channel_not_in_free_response_still_gated():
+def test_other_channel_not_in_free_response_top_level_processed():
+    # threadgate-v1: top-level messages not gated even outside free-response;
+    # only thread-replies are.
     adapter = _make_adapter(
         require_mention=True,
         free_response_channels=[CHANNEL_ID],
     )
-    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is True
 
 
 def test_dm_always_processed_regardless_of_setting():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(adapter, is_dm=True, text="hello") is True
+
+
+def test_other_bot_filter_reads_config_ids_and_names():
+    adapter = _make_adapter(
+        other_bot_ids=["U0BKX9KH7U6"],
+        other_bot_names=["Claude", "知行"],
+    )
+    assert adapter._slack_other_bot_ids() == ["U0BKX9KH7U6"]
+    assert adapter._slack_other_bot_names() == ["Claude", "知行"]
 
 
 # ---------------------------------------------------------------------------
