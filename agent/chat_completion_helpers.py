@@ -2814,8 +2814,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
+        _reason_labels = {
+            "billing": "credit exhausted (HTTP 400/402)",
+            "rate_limit": "rate limited (HTTP 429)",
+            "upstream_rate_limit": "upstream rate limited (HTTP 429)",
+            "auth": "auth error (HTTP 401/403)",
+            "auth_permanent": "auth permanently failed",
+            "overloaded": "provider overloaded (HTTP 503/529)",
+            "server_error": "server error (HTTP 500/502)",
+            "timeout": "connection timeout",
+            "model_not_found": "model not found (HTTP 404)",
+            "provider_policy_blocked": "provider policy blocked",
+            "content_policy_blocked": "content policy blocked",
+            "unknown": "unknown error",
+        }
+        _reason_str = _reason_labels.get(
+            reason.value if reason else "",
+            reason.value if reason else "unknown",
+        )
         agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
+            f"🔄 Primary model failed ({_reason_str}) — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
         # The buffered line above is dropped on successful recovery, but a
@@ -2826,7 +2844,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # buffered line is flushed instead.  See fallback-observability fix.
         agent._pending_fallback_notice = (
             f"🔄 Switched to fallback model: {old_model} via {old_provider} "
-            f"→ {fb_model} via {fb_provider}"
+            f"→ {fb_model} via {fb_provider} | reason: {_reason_str}"
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",

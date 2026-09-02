@@ -33,6 +33,22 @@ from agent.usage_pricing import (
 )
 
 
+def _num(v: Any) -> Optional[float]:
+    """Coerce a session timestamp to float; handles float, numeric str, ISO str."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def _fmt_est_cost(est_cost: float) -> str:
     """Format an aggregate estimated cost via the shared cost-label helper.
 
@@ -300,7 +316,13 @@ class InsightsEngine:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
-        return [dict(row) for row in cursor.fetchall()]
+        sessions = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            d["started_at"] = _num(d.get("started_at"))
+            d["ended_at"] = _num(d.get("ended_at"))
+            sessions.append(d)
+        return sessions
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Get tool call counts from messages.
